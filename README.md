@@ -1,6 +1,6 @@
 # Telegram Force-Sub Manager
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/manybotts/shepherd)
 
 This is a small Telegram manager bot for people running many file-store bots.
 
