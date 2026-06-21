@@ -525,6 +525,14 @@ async def promote_one(chat_id: str, bot: dict[str, Any]) -> tuple[bool, str]:
         await telegram.call("promoteChatMember", payload)
         return True, f"ok {display_username(bot.get('username'))} ({bot['bot_user_id']})"
     except TelegramAPIError as exc:
+        desc = exc.description or ""
+        if "CHAT_ADMIN_INVITE_REQUIRED" in desc:
+            return (
+                False,
+                f"skip {display_username(bot.get('username'))} ({bot['bot_user_id']}): "
+                f"not a member of this channel. Add the bot manually, "
+                f"then re-sync.",
+            )
         return (
             False,
             f"fail {display_username(bot.get('username'))} ({bot['bot_user_id']}): {exc.description}",
@@ -1045,7 +1053,7 @@ async def initialize_telegram(set_webhook: bool = True) -> None:
         },
     )
 
-    rights = {"can_manage_chat": True, "can_promote_members": True}
+    rights = {"can_manage_chat": True, "can_invite_users": True, "can_promote_members": True}
     for_channels_payload = {"rights": rights, "for_channels": True}
     try:
         await telegram.call("setMyDefaultAdministratorRights", for_channels_payload)
