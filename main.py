@@ -490,7 +490,7 @@ def promotion_rights() -> dict[str, bool]:
         "can_restrict_members": False,
         "can_promote_members": False,
         "can_change_info": False,
-        "can_invite_users": False,
+        "can_invite_users": True,
         "can_post_stories": False,
         "can_edit_stories": False,
         "can_delete_stories": False,
@@ -528,35 +528,6 @@ async def promote_one(chat_id: str, bot: dict[str, Any]) -> tuple[bool, str]:
         await telegram.call("promoteChatMember", payload)
         return True, f"ok {display_username(bot.get('username'))} ({bot['bot_user_id']})"
     except TelegramAPIError as exc:
-        desc = exc.description or ""
-        if "CHAT_ADMIN_INVITE_REQUIRED" in desc:
-            try:
-                await telegram.call(
-                    "promoteChatMember",
-                    {
-                        "chat_id": telegram_chat_id(chat_id),
-                        "user_id": int(bot["bot_user_id"]),
-                        "can_manage_chat": True,
-                        "can_invite_users": False,
-                        "can_promote_members": False,
-                        "is_anonymous": False,
-                        "can_manage_video_chats": False,
-                        "can_restrict_members": False,
-                        "can_change_info": False,
-                        "can_post_stories": False,
-                        "can_edit_stories": False,
-                        "can_delete_stories": False,
-                        "can_post_messages": False,
-                        "can_edit_messages": False,
-                        "can_pin_messages": False,
-                        "can_manage_topics": False,
-                        "can_manage_direct_messages": False,
-                        "can_delete_messages": False,
-                    },
-                )
-                return await promote_one(chat_id, bot)
-            except TelegramAPIError:
-                pass
         return (
             False,
             f"fail {display_username(bot.get('username'))} ({bot['bot_user_id']}): {exc.description}",
