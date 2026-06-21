@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: telegram-force-sub-manager
+    name: telegram-bot-administrator
     runtime: python
     plan: free
     autoDeployTrigger: off
@@ -14,7 +14,7 @@ services:
       - key: MONGODB_URI
         sync: false
       - key: MONGODB_DB
-        value: force_sub_manager
+        value: bot_manager
       - key: INVITE_CODE
         generateValue: true
       - key: ALLOW_SELF_SERVICE
@@ -22,6 +22,4 @@ services:
       - key: WEBHOOK_SECRET
         generateValue: true
       - key: PUBLIC_URL
-        sync: false
-      - key: API_SECRET
         sync: false
