@@ -292,24 +292,20 @@ class Storage:
         tenant_id = str(tenant_id)
         normalized = normalize_chat_id(chat_id)
         username = normalize_username(username)
-        query_parts: list[dict[str, Any]] = [
-            {"tenant_id": tenant_id, "chat_id": normalized}
-        ]
-        if username:
-            query_parts.append({"tenant_id": tenant_id, "username": username})
-        self.channels.delete_many({"$or": query_parts})
-        self.channels.insert_one(
-            clean_doc(
+        self.channels.update_one(
+            {"tenant_id": tenant_id, "chat_id": normalized},
+            {"$set": clean_doc(
                 {
                     "tenant_id": tenant_id,
                     "chat_id": normalized,
                     "title": title,
                     "username": username,
                     "added_by": added_by,
-                    "created_at": utcnow(),
                     "updated_at": utcnow(),
                 }
-            )
+            ),
+            "$setOnInsert": {"created_at": utcnow()}},
+            upsert=True,
         )
 
     def remove_channel(self, tenant_id: str | int, target: str) -> int:
@@ -532,6 +528,35 @@ async def promote_one(chat_id: str, bot: dict[str, Any]) -> tuple[bool, str]:
         await telegram.call("promoteChatMember", payload)
         return True, f"ok {display_username(bot.get('username'))} ({bot['bot_user_id']})"
     except TelegramAPIError as exc:
+        desc = exc.description or ""
+        if "CHAT_ADMIN_INVITE_REQUIRED" in desc:
+            try:
+                await telegram.call(
+                    "promoteChatMember",
+                    {
+                        "chat_id": telegram_chat_id(chat_id),
+                        "user_id": int(bot["bot_user_id"]),
+                        "can_manage_chat": True,
+                        "can_invite_users": False,
+                        "can_promote_members": False,
+                        "is_anonymous": False,
+                        "can_manage_video_chats": False,
+                        "can_restrict_members": False,
+                        "can_change_info": False,
+                        "can_post_stories": False,
+                        "can_edit_stories": False,
+                        "can_delete_stories": False,
+                        "can_post_messages": False,
+                        "can_edit_messages": False,
+                        "can_pin_messages": False,
+                        "can_manage_topics": False,
+                        "can_manage_direct_messages": False,
+                        "can_delete_messages": False,
+                    },
+                )
+                return await promote_one(chat_id, bot)
+            except TelegramAPIError:
+                pass
         return (
             False,
             f"fail {display_username(bot.get('username'))} ({bot['bot_user_id']}): {exc.description}",
