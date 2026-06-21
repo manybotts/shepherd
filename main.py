@@ -530,8 +530,8 @@ async def promote_one(chat_id: str, bot: dict[str, Any]) -> tuple[bool, str]:
             return (
                 False,
                 f"skip {display_username(bot.get('username'))} ({bot['bot_user_id']}): "
-                f"not a member of this channel. Add the bot manually, "
-                f"then re-sync.",
+                f"not a member. Remove and re-add this bot as admin "
+                f"(the shepherd bot needs can_invite_users right).",
             )
         return (
             False,
@@ -816,6 +816,7 @@ async def handle_admin_command(
                 f"<b>My status in {h(args[0])}</b>",
                 f"status: <code>{h(member.get('status'))}</code>",
                 f"can_promote_members: <code>{h(member.get('can_promote_members'))}</code>",
+                f"can_invite_users: <code>{h(member.get('can_invite_users'))}</code>",
                 f"can_manage_chat: <code>{h(member.get('can_manage_chat'))}</code>",
             ]
             await send_message(chat_id, "\n".join(lines), reply_id)
