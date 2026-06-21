@@ -152,19 +152,20 @@ class Storage:
         self.bots.create_index(
             [("tenant_id", ASCENDING), ("bot_user_id", ASCENDING)], unique=True
         )
-        self.bots.create_index(
-            [("tenant_id", ASCENDING), ("username", ASCENDING)],
-            unique=True,
-            sparse=True,
-        )
+
         self.channels.create_index(
             [("tenant_id", ASCENDING), ("chat_id", ASCENDING)], unique=True
         )
-        self.channels.create_index(
-            [("tenant_id", ASCENDING), ("username", ASCENDING)],
-            unique=True,
-            sparse=True,
-        )
+        # Drop legacy unique sparse indexes on username that cause E11000 errors
+        # with null usernames (private channels/bots without @username)
+        for name in ["tenant_id_1_username_1"]:
+            for coll_name in ["channels", "managed_bots"]:
+                try:
+                    self.db[coll_name].drop_index(name)
+                except Exception:
+                    pass
+
+
 
         for owner_id in self.settings.owner_ids:
             self.ensure_tenant_id(owner_id, source="env_owner")
@@ -238,24 +239,20 @@ class Storage:
     ) -> None:
         tenant_id = str(tenant_id)
         username = normalize_username(username)
-        query_parts: list[dict[str, Any]] = [
-            {"tenant_id": tenant_id, "bot_user_id": int(bot_user_id)}
-        ]
-        if username:
-            query_parts.append({"tenant_id": tenant_id, "username": username})
-        self.bots.delete_many({"$or": query_parts})
-        self.bots.insert_one(
-            clean_doc(
+        self.bots.update_one(
+            {"tenant_id": tenant_id, "bot_user_id": int(bot_user_id)},
+            {"$set": clean_doc(
                 {
                     "tenant_id": tenant_id,
                     "bot_user_id": int(bot_user_id),
                     "username": username,
                     "label": label,
                     "added_by": added_by,
-                    "created_at": utcnow(),
                     "updated_at": utcnow(),
                 }
-            )
+            ),
+            "$setOnInsert": {"created_at": utcnow()}},
+            upsert=True,
         )
 
     def remove_bot(self, tenant_id: str | int, target: str) -> int:
