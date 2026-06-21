@@ -121,8 +121,11 @@ class Settings:
             invite_code=os.getenv("INVITE_CODE", "").strip(),
             allow_self_service=env_bool("ALLOW_SELF_SERVICE"),
             public_url=public_url,
-            webhook_secret=os.getenv("WEBHOOK_SECRET", "").strip()
-            or secrets.token_urlsafe(24),
+            webhook_secret=re.sub(
+                r"[^A-Za-z0-9_-]", "",
+                os.getenv("WEBHOOK_SECRET", "").strip()
+            )
+            or re.sub(r"[^A-Za-z0-9_-]", "", secrets.token_urlsafe(24)),
             mongodb_uri=mongodb_uri,
             mongodb_db=os.getenv("MONGODB_DB", "bot_manager").strip()
             or "bot_manager",
@@ -1058,13 +1061,12 @@ async def initialize_telegram(set_webhook: bool = True) -> None:
 
     if set_webhook and settings.public_url:
         webhook_url = f"{settings.public_url}/telegram/webhook/{settings.webhook_secret}"
-        telegram_secret = re.sub(r"[^A-Za-z0-9_-]", "", settings.webhook_secret)
         await telegram.call(
             "setWebhook",
             {
                 "url": webhook_url,
                 "allowed_updates": settings.allowed_updates,
-                "secret_token": telegram_secret,
+                "secret_token": settings.webhook_secret,
                 "drop_pending_updates": False,
             },
         )
@@ -1105,7 +1107,7 @@ async def telegram_webhook(
     if secret != settings.webhook_secret:
         raise HTTPException(status_code=404, detail="Not found")
     if x_telegram_bot_api_secret_token and not secrets.compare_digest(
-        x_telegram_bot_api_secret_token, re.sub(r"[^A-Za-z0-9_-]", "", settings.webhook_secret)
+        x_telegram_bot_api_secret_token, settings.webhook_secret
     ):
         raise HTTPException(status_code=403, detail="Bad Telegram secret")
 
