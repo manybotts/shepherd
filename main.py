@@ -14,13 +14,12 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
 from pymongo import ASCENDING, MongoClient
 from pymongo.collection import Collection
 
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
-SUBSCRIBED_STATUSES = {"creator", "administrator", "member"}
+
 BOT_ID: int | None = None
 BOT_USERNAME: str | None = None
 
@@ -92,7 +91,6 @@ class Settings:
     owner_ids: set[int]
     invite_code: str
     allow_self_service: bool
-    api_secret: str
     public_url: str | None
     webhook_secret: str
     mongodb_uri: str
@@ -122,13 +120,12 @@ class Settings:
             owner_ids=parse_owner_ids(os.getenv("OWNER_IDS", "")),
             invite_code=os.getenv("INVITE_CODE", "").strip(),
             allow_self_service=env_bool("ALLOW_SELF_SERVICE"),
-            api_secret=os.getenv("API_SECRET", "").strip(),
             public_url=public_url,
             webhook_secret=os.getenv("WEBHOOK_SECRET", "").strip()
             or secrets.token_urlsafe(24),
             mongodb_uri=mongodb_uri,
-            mongodb_db=os.getenv("MONGODB_DB", "force_sub_manager").strip()
-            or "force_sub_manager",
+            mongodb_db=os.getenv("MONGODB_DB", "bot_manager").strip()
+            or "bot_manager",
             request_timeout=float(os.getenv("REQUEST_TIMEOUT", "20")),
             promote_can_post=env_bool("PROMOTE_CAN_POST_MESSAGES"),
             promote_can_edit=env_bool("PROMOTE_CAN_EDIT_MESSAGES"),
@@ -149,7 +146,6 @@ class Storage:
     def init(self) -> None:
         self.client.admin.command("ping")
         self.tenants.create_index("owner_user_id", unique=True)
-        self.tenants.create_index("api_secret_hash", unique=True, sparse=True)
         self.bots.create_index(
             [("tenant_id", ASCENDING), ("bot_user_id", ASCENDING)], unique=True
         )
@@ -228,26 +224,6 @@ class Storage:
     def tenant_is_active(self, tenant_id: str | int | None) -> bool:
         tenant = self.get_tenant(tenant_id)
         return bool(tenant and tenant.get("active"))
-
-    def rotate_api_key(self, tenant_id: str | int) -> str:
-        tenant_id = str(tenant_id)
-        key = "fsm_" + tenant_id + "_" + secrets.token_urlsafe(32)
-        self.tenants.update_one(
-            {"_id": tenant_id},
-            {
-                "$set": {
-                    "api_secret_hash": secret_hash(key),
-                    "api_secret_last4": key[-4:],
-                    "updated_at": utcnow(),
-                }
-            },
-        )
-        return key
-
-    def find_tenant_by_api_key(self, api_key: str) -> dict[str, Any] | None:
-        if not api_key:
-            return None
-        return self.tenants.find_one({"api_secret_hash": secret_hash(api_key), "active": True})
 
     def add_bot(
         self,
@@ -413,18 +389,7 @@ class TelegramClient:
 settings = Settings.from_env()
 storage = Storage(settings)
 telegram = TelegramClient(settings)
-app = FastAPI(title="Telegram Force-Sub Manager", version="2.0.0")
-
-
-class CheckRequest(BaseModel):
-    user_id: int = Field(..., description="Telegram user ID to check")
-    channel: str | None = Field(None, description="One channel/chat to check")
-    channels: list[str] | None = Field(None, description="Multiple channels/chats to check")
-    mode: str = Field("all", pattern="^(all|any)$")
-    tenant_id: str | None = Field(
-        None,
-        description="Optional tenant ID. Only needed when using the legacy global API_SECRET.",
-    )
+app = FastAPI(title="Telegram Bot Administrator", version="2.0.0")
 
 
 def user_id_from_message(message: dict[str, Any]) -> int | None:
@@ -599,29 +564,6 @@ async def sync_channel(tenant_id: str, chat_id: str) -> list[str]:
     return lines
 
 
-async def check_user_subscription(channel: str, user_id: int) -> dict[str, Any]:
-    try:
-        member = await telegram.call(
-            "getChatMember",
-            {"chat_id": telegram_chat_id(channel), "user_id": user_id},
-        )
-        status = member.get("status")
-        return {
-            "channel": channel,
-            "ok": True,
-            "status": status,
-            "subscribed": status in SUBSCRIBED_STATUSES,
-        }
-    except TelegramAPIError as exc:
-        return {
-            "channel": channel,
-            "ok": False,
-            "status": None,
-            "subscribed": False,
-            "error": exc.description,
-        }
-
-
 def render_bots(tenant_id: str) -> str:
     bots = storage.list_bots(tenant_id)
     if not bots:
@@ -651,7 +593,7 @@ def help_text(active: bool = True) -> str:
     if not active:
         return "\n".join(
             [
-                "<b>Force-Sub Manager</b>",
+                "<b>Bot Administration</b>",
                 "",
                 "This shared manager keeps every user's setup separate.",
                 "Send /invite CODE to create your own workspace.",
@@ -661,14 +603,12 @@ def help_text(active: bool = True) -> str:
 
     return "\n".join(
         [
-            "<b>Force-Sub Manager</b>",
+            "<b>Bot Administration</b>",
             "",
             "Your workspace is isolated from other users.",
             "",
             "Account:",
             "/workspace - show your workspace details",
-            "/apikey - show API key status",
-            "/apikey rotate - create a new API key",
             "",
             "Admin setup:",
             "/whoami - show your Telegram user ID",
@@ -678,7 +618,7 @@ def help_text(active: bool = True) -> str:
             "/bots",
             "",
             "Channel setup:",
-            "/addchannel @channel - save a force-sub channel",
+            "/addchannel @channel - save a channel",
             "/removechannel @channel",
             "/channels",
             "/checkadmin @channel - check my admin rights",
@@ -689,8 +629,6 @@ def help_text(active: bool = True) -> str:
             "/admins @channel - list bot admins I can see",
             "/demote @channel @SomeBot - remove one registered bot's admin rights",
             "",
-            "Central API mode:",
-            "Your file bots can call POST /api/check-subscription with your personal API key.",
         ]
     )
 
@@ -706,13 +644,6 @@ async def activate_user(
         await send_message(chat_id, "I could not read your user ID.", reply_id)
         return None
     tenant = storage.ensure_tenant_from_user(from_user, source=source)
-    await send_message(
-        chat_id,
-        "Workspace ready. Your tenant ID is "
-        f"<code>{h(tenant['_id'])}</code>.\n"
-        "Use /apikey rotate to create your API key.",
-        reply_id,
-    )
     return tenant
 
 
@@ -754,11 +685,7 @@ async def handle_admin_command(
     if command == "/workspace":
         bot_count = len(storage.list_bots(tenant_id))
         channel_count = len(storage.list_channels(tenant_id))
-        api_status = (
-            f"set, ending in {h(tenant.get('api_secret_last4'))}"
-            if tenant.get("api_secret_hash")
-            else "not set"
-        )
+
         await send_message(
             chat_id,
             "\n".join(
@@ -767,42 +694,8 @@ async def handle_admin_command(
                     f"tenant_id: <code>{h(tenant_id)}</code>",
                     f"bots: <code>{bot_count}</code>",
                     f"channels: <code>{channel_count}</code>",
-                    f"api_key: <code>{api_status}</code>",
                 ]
             ),
-            reply_id,
-        )
-        return
-
-    if command == "/apikey":
-        if args and args[0].lower() != "rotate":
-            await send_message(chat_id, "Usage: /apikey or /apikey rotate", reply_id)
-            return
-        if args and args[0].lower() == "rotate":
-            key = storage.rotate_api_key(tenant_id)
-            await send_message(
-                chat_id,
-                "New API key for this workspace:\n"
-                f"<code>{h(key)}</code>\n\n"
-                "Use it as X-API-Key from your file-store bots.",
-                reply_id,
-            )
-            return
-        if tenant.get("api_secret_hash"):
-            await send_message(
-                chat_id,
-                "An API key already exists for this workspace, ending in "
-                f"<code>{h(tenant.get('api_secret_last4'))}</code>.\n"
-                "Use /apikey rotate if you need a fresh one.",
-                reply_id,
-            )
-            return
-        key = storage.rotate_api_key(tenant_id)
-        await send_message(
-            chat_id,
-            "API key created for this workspace:\n"
-            f"<code>{h(key)}</code>\n\n"
-            "Use it as X-API-Key from your file-store bots.",
             reply_id,
         )
         return
@@ -1147,7 +1040,6 @@ async def initialize_telegram(set_webhook: bool = True) -> None:
                 {"command": "help", "description": "Show commands"},
                 {"command": "invite", "description": "Activate a shared workspace"},
                 {"command": "workspace", "description": "Show workspace details"},
-                {"command": "apikey", "description": "Manage your API key"},
                 {"command": "whoami", "description": "Show chat and user IDs"},
                 {"command": "addbot", "description": "Register a file bot"},
                 {"command": "bots", "description": "List registered bots"},
@@ -1177,34 +1069,6 @@ async def initialize_telegram(set_webhook: bool = True) -> None:
         )
 
 
-def api_key_candidates(x_api_key: str | None, authorization: str | None) -> list[str]:
-    candidates = []
-    if x_api_key:
-        candidates.append(x_api_key)
-    if authorization and authorization.lower().startswith("bearer "):
-        candidates.append(authorization.split(" ", 1)[1])
-    return candidates
-
-
-def resolve_api_tenant(
-    body_tenant_id: str | None,
-    x_api_key: str | None,
-    authorization: str | None,
-) -> dict[str, Any]:
-    for candidate in api_key_candidates(x_api_key, authorization):
-        tenant = storage.find_tenant_by_api_key(candidate)
-        if tenant:
-            return tenant
-        if settings.api_secret and secrets.compare_digest(candidate, settings.api_secret):
-            fallback_tenant_id = body_tenant_id
-            if not fallback_tenant_id and settings.owner_ids:
-                fallback_tenant_id = str(sorted(settings.owner_ids)[0])
-            tenant = storage.get_tenant(fallback_tenant_id)
-            if tenant and tenant.get("active"):
-                return tenant
-    raise HTTPException(status_code=401, detail="Bad or missing API key")
-
-
 @app.on_event("startup")
 async def startup() -> None:
     await initialize_telegram(set_webhook=True)
@@ -1218,7 +1082,7 @@ async def shutdown() -> None:
 
 @app.get("/", response_class=PlainTextResponse)
 async def root() -> str:
-    return "Telegram Force-Sub Manager is running with MongoDB tenant storage.\n"
+    return "Telegram Bot Administrator is running.\n"
 
 
 @app.get("/healthz")
@@ -1250,51 +1114,6 @@ async def telegram_webhook(
     except Exception as exc:
         await notify_super_owners(f"Update handling error: <code>{h(exc)}</code>")
     return {"ok": True}
-
-
-@app.post("/api/check-subscription")
-async def api_check_subscription(
-    body: CheckRequest,
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None),
-) -> dict[str, Any]:
-    tenant = resolve_api_tenant(body.tenant_id, x_api_key, authorization)
-    tenant_id = str(tenant["_id"])
-
-    channels = body.channels or ([body.channel] if body.channel else None)
-    if not channels:
-        channels = [channel["chat_id"] for channel in storage.list_channels(tenant_id)]
-    if not channels:
-        raise HTTPException(status_code=400, detail="No channels configured for this tenant")
-
-    results = [await check_user_subscription(normalize_chat_id(ch), body.user_id) for ch in channels]
-    if body.mode == "any":
-        subscribed = any(result["subscribed"] for result in results if result["ok"])
-    else:
-        subscribed = all(result["subscribed"] for result in results)
-
-    return {
-        "ok": True,
-        "tenant_id": tenant_id,
-        "subscribed": subscribed,
-        "mode": body.mode,
-        "results": results,
-    }
-
-
-@app.get("/api/check-subscription")
-async def api_check_subscription_get(
-    user_id: int,
-    channel: str,
-    tenant_id: str | None = None,
-    x_api_key: str | None = Header(default=None),
-    authorization: str | None = Header(default=None),
-) -> dict[str, Any]:
-    return await api_check_subscription(
-        CheckRequest(user_id=user_id, channel=channel, tenant_id=tenant_id),
-        x_api_key=x_api_key,
-        authorization=authorization,
-    )
 
 
 async def run_polling() -> None:
