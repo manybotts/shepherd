@@ -1099,12 +1099,16 @@ async def handle_my_chat_member(update: dict[str, Any]) -> None:
             username=chat.get("username"),
             added_by=actor.get("id"),
         )
+        msg = (
+            f"Saved {h(chat_type)} <b>{h(chat.get('title', chat.get('id')))}</b> "
+            f"(<code>{h(chat.get('id'))}</code>) in your workspace."
+        )
+        bots = storage.list_bots(tenant_id)
+        if bots:
+            synced = await sync_channel(tenant_id, str(chat.get("id")))
+            msg += "\n\n" + "\n".join(synced)
         try:
-            await send_message(
-                int(tenant_id),
-                f"Saved {h(chat_type)} <b>{h(chat.get('title', chat.get('id')))}</b> "
-                f"(<code>{h(chat.get('id'))}</code>) in your workspace.",
-            )
+            await send_message(int(tenant_id), msg)
         except TelegramAPIError:
             pass
     elif status in {"left", "kicked"}:
