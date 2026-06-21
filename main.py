@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from telethon import TelegramClient as TClient, functions, types
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pymongo import ASCENDING, MongoClient
@@ -96,6 +97,9 @@ class Settings:
     mongodb_uri: str
     mongodb_db: str
     request_timeout: float
+    tg_api_id: int | None
+    tg_api_hash: str | None
+    tg_session: str | None
     promote_can_post: bool
     promote_can_edit: bool
     promote_can_delete: bool
@@ -130,6 +134,9 @@ class Settings:
             mongodb_db=os.getenv("MONGODB_DB", "bot_manager").strip()
             or "bot_manager",
             request_timeout=float(os.getenv("REQUEST_TIMEOUT", "20")),
+            tg_api_id=int(v) if (v := os.getenv("TG_API_ID", "").strip()) else None,
+            tg_api_hash=os.getenv("TG_API_HASH", "").strip() or None,
+            tg_session=os.getenv("TG_SESSION", "").strip() or None,
             promote_can_post=env_bool("PROMOTE_CAN_POST_MESSAGES"),
             promote_can_edit=env_bool("PROMOTE_CAN_EDIT_MESSAGES"),
             promote_can_delete=env_bool("PROMOTE_CAN_DELETE_MESSAGES"),
@@ -385,6 +392,33 @@ class TelegramClient:
 settings = Settings.from_env()
 storage = Storage(settings)
 telegram = TelegramClient(settings)
+
+# Lazy userbot client for channel operations via MTProto (Telethon).
+# Falls back gracefully if not configured.
+_userbot: TClient | None = None
+
+
+async def get_userbot() -> TClient | None:
+    global _userbot
+    if _userbot is not None:
+        return _userbot
+    if not settings.tg_api_id or not settings.tg_api_hash or not settings.tg_session:
+        return None
+    _userbot = TClient(
+        session=settings.tg_session,
+        api_id=settings.tg_api_id,
+        api_hash=settings.tg_api_hash,
+    )
+    await _userbot.start()
+    return _userbot
+
+
+async def close_userbot() -> None:
+    global _userbot
+    if _userbot:
+        await _userbot.disconnect()
+        _userbot = None
+
 app = FastAPI(title="Telegram Bot Administrator", version="2.0.0")
 
 
@@ -527,11 +561,42 @@ async def promote_one(chat_id: str, bot: dict[str, Any]) -> tuple[bool, str]:
     except TelegramAPIError as exc:
         desc = exc.description or ""
         if "CHAT_ADMIN_INVITE_REQUIRED" in desc:
+            ub = await get_userbot()
+            if ub:
+                try:
+                    channel_entity = await ub.get_input_entity(telegram_chat_id(chat_id))
+                    bot_entity = await ub.get_input_entity(int(bot["bot_user_id"]))
+                    rights = types.ChatAdminRights(
+                        change_info=False,
+                        post_messages=True,
+                        edit_messages=True,
+                        delete_messages=True,
+                        ban_users=False,
+                        invite_users=False,
+                        pin_messages=False,
+                        add_admins=False,
+                        anonymous=False,
+                        manage_call=False,
+                        other=False,
+                        manage_topics=False,
+                    )
+                    await ub(functions.channels.EditAdminRequest(
+                        channel=channel_entity,
+                        user_id=bot_entity,
+                        admin_rights=rights,
+                        rank="",
+                    ))
+                    return True, f"ok {display_username(bot.get('username'))} ({bot['bot_user_id']})"
+                except Exception as ue:
+                    return (
+                        False,
+                        f"skip {display_username(bot.get('username'))} ({bot['bot_user_id']}): "
+                        f"userbot invite failed: {ue}",
+                    )
             return (
                 False,
                 f"skip {display_username(bot.get('username'))} ({bot['bot_user_id']}): "
-                f"not a member. Remove and re-add this bot as admin "
-                f"(the shepherd bot needs can_invite_users right).",
+                f"not in channel. Set TG_API_ID, TG_API_HASH, TG_SESSION env vars for auto-invite.",
             )
         return (
             False,
@@ -1081,6 +1146,7 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await close_userbot()
     await telegram.close()
     storage.close()
 

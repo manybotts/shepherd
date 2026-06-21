@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30,<1
 httpx>=0.27,<1
 pymongo>=4.8,<5
 pydantic>=2.7,<3
+telethon>=1.34,<2
